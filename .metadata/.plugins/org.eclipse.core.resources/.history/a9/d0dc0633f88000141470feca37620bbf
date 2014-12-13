@@ -1,0 +1,250 @@
+package server;
+
+
+import java.io.File;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.InvalidKeyException;
+import java.security.Key;
+import java.security.NoSuchAlgorithmException;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+
+import javax.crypto.BadPaddingException;
+import javax.crypto.Cipher;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.NoSuchPaddingException;
+import javax.crypto.ShortBufferException;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
+import org.bouncycastle.crypto.prng.*;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.xbill.DNS.Address;
+
+public class DNSServer {
+	/** Port for the DNS server */
+	private static int port;
+	/** Socket for client connections */
+	private static ServerSocket socket;
+	/** Lock for cache writes */
+	private static Lock lock;
+	/** Cache for mapping random ID to # uses left */
+	private static HashMap<Long, Integer> cache;
+	/** TTL for cookies */
+	private static int TTL;
+	/** # of uses per cookie */
+	private static int N;
+
+	/** Create the ProxyCache object and the socket */
+	public static void init(int p) {
+		port = p;
+		lock = new ReentrantLock();
+		cache = new HashMap<Long, Integer>();
+		TTL = 604800; // # seconds in a week
+		N = 10;
+		
+		// Create folder for cache files
+		(new File("cache")).mkdir();
+		
+		try {
+			socket = new ServerSocket(port);
+		} catch (IOException e) {
+			System.out.println("Error creating socket: " + e);
+			System.exit(-1);
+		}
+	}
+
+	public static void handle(Socket client) {
+
+		/* Process request. If there are any exceptions, then simply
+		 * return and end this request. This unfortunately means the
+		 * client will hang for a while, until it timeouts. */
+
+		// Read request 
+		ObjectOutputStream toClient = null;
+		try {
+			// Initialize streams and ciphers
+			ObjectInputStream fromClient = new ObjectInputStream(client.getInputStream());
+			toClient = new ObjectOutputStream(client.getOutputStream());
+
+			Cipher encrypt = Cipher.getInstance("AES/CBC/PKCS5Padding", new BouncyCastleProvider());
+			Cipher decrypt = Cipher.getInstance("AES/CBC/PKCS5Padding", new BouncyCastleProvider());
+			VMPCRandomGenerator randGen = new VMPCRandomGenerator();
+			byte[] randBytes = new byte[16];
+			randGen.nextBytes(randBytes);
+			Key key = new SecretKeySpec(randBytes, "AES");
+			byte[] iv = new byte[16];
+			randGen.nextBytes(iv);
+			encrypt.init(Cipher.ENCRYPT_MODE, key, new IvParameterSpec(iv));
+			decrypt.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));
+			
+			// receive initiation, which is either "I want to talk" or request with cookie
+			Object initial = fromClient.readObject();
+			System.out.println("Initial: " + initial);
+			
+			byte[] cookieFromClient;
+			
+			if (((String)initial).equals("I want to talk")) {
+				// Create a cookie
+				randGen.nextBytes(randBytes);
+				long rand = ByteBuffer.wrap(randBytes).getLong();
+				
+				String ip = client.getInetAddress().getHostAddress();
+				
+				long timestamp = (new Date()).getTime();
+				
+				String message = String.format("%d|||%s|||%d", rand, ip, timestamp);
+				System.out.println("Cookie contents: " + message);
+		        
+		        byte[] cookieBytes = new byte[encrypt.getOutputSize(message.getBytes().length)];
+		        int cbLength = 0;
+				cbLength = encrypt.update(message.getBytes(), 0, message.getBytes().length, cookieBytes, 0);
+				cbLength += encrypt.doFinal(cookieBytes, cbLength);
+				
+				// cache cookie
+				lock.lock();
+				cache.put(rand, N);
+				lock.unlock();
+		        
+		        // (send length first)
+		        toClient.writeObject(cbLength);
+		        toClient.writeObject(cookieBytes);
+		        
+		        // Then receive DNS request starting with cookie
+		        cookieFromClient = (byte[])fromClient.readObject();
+			} else {
+				cookieFromClient = (byte[])initial;
+			}
+			
+	        // receive hostname
+	        String hostname = (String)fromClient.readObject();
+	        
+	        System.out.println("hostname: " + hostname);
+	        System.out.println("cookie: " + cookieFromClient);
+
+	        // authenticate cookie
+	        // first decrypt cookie
+	        int clientCookieLength = cookieFromClient.length;
+	        byte[] decryptedCookie = new byte[decrypt.getOutputSize(clientCookieLength)];
+	        int dcLength = 0;
+			dcLength = decrypt.update(cookieFromClient, 0, clientCookieLength, decryptedCookie, 0);
+			dcLength += decrypt.doFinal(decryptedCookie, dcLength);
+			
+	        System.out.println("decrypted cookie: " + new String(decryptedCookie));
+	        
+	        String[] cookiePieces = new String(decryptedCookie).split("\\|\\|\\|");
+	        long randc = Long.parseLong(cookiePieces[0]);
+	        String ipc = cookiePieces[1];
+	        long timestampc = Long.parseLong(cookiePieces[2].trim());
+	        
+	        // Verify random identifier is in cache
+	        if (cache.get(randc) == null) {
+	        	System.out.println("Cookie failed");
+	        	return;
+	        } 
+	        // Verify IP in cookie matches IP of requester
+	        else if (!ipc.equals(client.getInetAddress().getHostAddress())) {
+	        	System.out.println("IP address failed");
+	        	return;
+	        }
+	        // Verify timestamp is still valid
+	        else if (timestampc > new Date().getTime() + TTL) {
+	        	System.out.println("Timestamp expired");
+	        	return;
+	        }
+	        else {
+		        // If successful authentication, return IP address
+		        InetAddress addr = Address.getByName(hostname);
+		        toClient.writeObject(addr.getHostAddress());
+				
+		        // Also decrement counter in cache
+		        lock.lock();
+		        cache.put(randc, cache.get(randc) - 1);
+		        lock.unlock();
+	        }
+		} catch (IOException e) {
+			//System.out.println("Error reading request from client: " + e);
+			return;
+		} catch (NoSuchAlgorithmException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (NoSuchPaddingException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (InvalidKeyException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (ClassNotFoundException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (InvalidAlgorithmParameterException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (ShortBufferException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		} catch (IllegalBlockSizeException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		} catch (BadPaddingException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+	}
+
+	/** Read command line arguments and start proxy */
+	public static void main(String args[]) {
+		int myPort = 1053;
+
+		init(myPort);
+
+		/**
+		 * Main loop. Listen for incoming connections and spawn a new thread for
+		 * handling them
+		 */
+		Socket client = null;
+
+		while (true) {
+			try {
+				client = socket.accept();
+
+				// Create thread and anonymous class to handle a single
+				// client connection
+				Thread serveClient = new Thread(new Runnable() {
+					private Socket _client;
+
+					public Runnable init(Socket c) {
+						_client = c;
+						return this;
+					}
+
+					@Override
+					public void run() {
+						handle(_client);
+					}
+
+				}.init(client));
+
+				serveClient.start();
+
+			} catch (IOException e) {
+				System.out.println("Error reading request from client: " + e);
+				/*
+				 * Definitely cannot continue processing this request, so skip
+				 * to next iteration of while loop.
+				 */
+				continue;
+			}
+		}
+
+	}
+}

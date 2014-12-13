@@ -1,0 +1,219 @@
+package server;
+
+import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.security.Key;
+import java.security.NoSuchAlgorithmException;
+import java.util.Date;
+import java.util.concurrent.locks.Lock;
+
+import javax.crypto.Cipher;
+import javax.crypto.NoSuchPaddingException;
+import javax.crypto.spec.SecretKeySpec;
+
+import org.bouncycastle.crypto.prng.*;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+
+public class DNSServer {
+	/** Port for the DNS server */
+	private static int port;
+	/** Socket for client connections */
+	private static ServerSocket socket;
+	/** Lock for cache writes */
+	private static Lock lock;
+
+	/** Create the ProxyCache object and the socket */
+	public static void init(int p) {
+		port = p;
+		
+		// Create folder for cache files
+		(new File("cache")).mkdir();
+		
+		try {
+			socket = new ServerSocket(port);
+		} catch (IOException e) {
+			System.out.println("Error creating socket: " + e);
+			System.exit(-1);
+		}
+	}
+
+	public static void handle(Socket client) {
+		Socket server = null;
+		String filename;
+
+		/* Process request. If there are any exceptions, then simply
+		 * return and end this request. This unfortunately means the
+		 * client will hang for a while, until it timeouts. */
+
+		// Read request 
+		DataOutputStream toClient = null;
+		try {
+			
+			BufferedReader fromClient = new BufferedReader(new InputStreamReader(
+					client.getInputStream()));
+			// receive initiation
+			System.out.println(fromClient.readLine());
+
+			toClient = new DataOutputStream(client.getOutputStream());
+			// create cookie
+			byte[] randBytes = new byte[8];
+			(new VMPCRandomGenerator()).nextBytes(randBytes);
+			long rand = ByteBuffer.wrap(randBytes).getLong();
+			
+			InetAddress ip = client.getInetAddress();
+			
+			long timestamp = (new Date()).getTime();
+			
+			Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding", new BouncyCastleProvider());
+			(new VMPCRandomGenerator()).nextBytes(randBytes);
+			Key key = new SecretKeySpec(randBytes, "AES");
+			cipher.init(Cipher.ENCRYPT_MODE, key)
+			
+			// filename = cache/[hashed version of string "host-URI"].txt
+			/*filename = "cache/" + (request.getHost() + "-" + request.getURI()).hashCode() + ".txt";
+			
+			// check if request is cached
+			lock.lock();
+			if ((new File(filename).exists())) {
+				System.out.println("Cache hit: " + request.getURI() + " at " + request.getHost());
+				DataInputStream fromCache = new DataInputStream(new FileInputStream(filename));
+				
+				// Read response from cache as if it were an HTTP response (it's the same format)
+				response = new HttpResponse(fromCache);
+				fromCache.close();
+				lock.unlock();
+				
+				// Write response to client. First headers, then body 
+				toClient.writeBytes(response.toString());
+				toClient.write(response.getBody());
+				
+				// Close connection
+				if (client != null)
+					client.close();
+				
+				return;
+			}
+			else {
+				lock.unlock();
+				System.out.println("Cache miss.");
+			}*/
+		} catch (IOException e) {
+			//System.out.println("Error reading request from client: " + e);
+			return;
+		} catch (NoSuchAlgorithmException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (NoSuchPaddingException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+		// Send request to server 
+		/*try {
+			// Open socket and write request to socket 
+			server = new Socket(request.getHost(), 80);
+			DataOutputStream toServer = new DataOutputStream(server.getOutputStream());
+			toServer.writeBytes(request.toString());
+		} catch (UnknownHostException e) {
+			System.out.println("Unknown host: " + request.getHost());
+			System.out.println(e);
+			return;
+		} catch (IOException e) {
+			//System.out.println("Error writing request to server: " + e);
+			return;
+		}
+		// Read response and forward it to client 
+		try {
+			DataInputStream fromServer = new DataInputStream(server.getInputStream());
+			response = new HttpResponse(fromServer);
+			
+			// Write response to client. First headers, then body 
+			toClient.writeBytes(response.toString());
+			toClient.write(response.getBody());
+			
+		} catch (IOException e) {
+			//System.out.println("Error writing response to client: " + e);
+		}
+
+		// Close connections
+		try {
+			if (client != null)
+				client.close();
+			if (server != null)
+				server.close();
+		} catch (IOException e) {
+			//System.out.println("Error closing connections: " + e);
+		}*/
+		
+		// Insert object into the cache
+		/*if (filename != null) {
+			try {
+				lock.lock();
+				FileOutputStream writer = new FileOutputStream(new File(filename));
+				writer.write(response.toString().getBytes());
+				writer.write(response.getBody());
+				writer.close();
+				lock.unlock();
+			} catch (FileNotFoundException e) {
+				System.out.println("Cache file not found.");
+			} catch (IOException e) {
+				System.out.println("Error writing to cache file: " + e);
+			}
+		}*/
+	}
+
+	/** Read command line arguments and start proxy */
+	public static void main(String args[]) {
+		int myPort = 1053;
+
+		init(myPort);
+
+		/**
+		 * Main loop. Listen for incoming connections and spawn a new thread for
+		 * handling them
+		 */
+		Socket client = null;
+
+		while (true) {
+			try {
+				client = socket.accept();
+
+				// Create thread and anonymous class to handle a single
+				// client connection
+				Thread serveClient = new Thread(new Runnable() {
+					private Socket _client;
+
+					public Runnable init(Socket c) {
+						_client = c;
+						return this;
+					}
+
+					@Override
+					public void run() {
+						handle(_client);
+					}
+
+				}.init(client));
+
+				serveClient.start();
+
+			} catch (IOException e) {
+				System.out.println("Error reading request from client: " + e);
+				/*
+				 * Definitely cannot continue processing this request, so skip
+				 * to next iteration of while loop.
+				 */
+				continue;
+			}
+		}
+
+	}
+}

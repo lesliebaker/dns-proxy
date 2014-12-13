@@ -1,0 +1,206 @@
+/**
+ * @author Leslie Baker
+ * u0823226
+ */
+
+package proxy;
+
+/**
+ * ProxyCache.java - Simple caching proxy
+ *
+ * $Id: ProxyCache.java,v 1.3 2004/02/16 15:22:00 kangasha Exp $
+ *
+ */
+
+import java.net.*;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.io.*;
+
+import client.HttpResponse;
+
+import server.HttpRequest;
+import server.HttpRequest.BadMethodException;
+import server.HttpRequest.BadRequestException;
+import server.HttpRequest.BadVersionException;
+import server.HttpRequest.DNSException;
+import server.HttpRequest.EmptyRequestException;
+
+public class ProxyCache {
+	/** Port for the proxy */
+	private static int port;
+	/** Socket for client connections */
+	private static ServerSocket socket;
+	/** Lock for cache writes */
+	private static ReentrantLock lock;
+	
+	/** keep track of cookie from DNS */
+	private static Object currentCookie;
+
+	/** Create the ProxyCache object and the socket */
+	public static void init(int p) {
+		port = p;
+		lock = new ReentrantLock();
+		
+		try {
+			socket = new ServerSocket(port);
+		} catch (IOException e) {
+			System.out.println("Error creating socket: " + e);
+			System.exit(-1);
+		}
+	}
+
+	public static void handle(Socket client) {
+		Socket server = null;
+		HttpRequest request = null;
+		HttpResponse response = null;
+
+		/* Process request. If there are any exceptions, then simply
+		 * return and end this request. This unfortunately means the
+		 * client will hang for a while, until it timeouts. */
+
+		// Read request 
+		DataOutputStream toClient = null;
+		try {
+			BufferedReader fromClient = new BufferedReader(new InputStreamReader(
+					client.getInputStream()));
+			toClient = new DataOutputStream(client.getOutputStream());
+			try {
+				lock.lock();
+				request = new HttpRequest(fromClient, currentCookie);
+				currentCookie = request.getCookie();
+			} catch (DNSException e) {
+				System.out.println("Error with DNS: " + e.message());
+			} finally {
+				if (lock.isHeldByCurrentThread())
+					lock.unlock();
+			}
+		} catch (IOException e) {
+			System.out.println("Error reading request from client: " + e);
+			return;
+		} catch (BadMethodException e) {
+			sendErrorMessage("501", "Not Implemented", "This request method has not been implemented.",
+					toClient, client);
+			return;
+		} catch (BadVersionException e) {
+			sendErrorMessage("501", "Not Implemented", "This HTTP version has not been implemented.",
+					toClient, client);
+			return;
+		} catch (EmptyRequestException e) {
+			//System.out.println("Empty request");
+			return;
+		} catch (BadRequestException e) {
+			System.out.println("Bad request");
+			sendErrorMessage("400", "Bad Request", "The request was not formatted properly.",
+					toClient, client);
+			return;
+		}
+		
+		// Send request to server 
+		try {
+			// Open socket and write request to socket 
+			server = new Socket(request.getHost(), 80);
+			DataOutputStream toServer = new DataOutputStream(server.getOutputStream());
+			toServer.writeBytes(request.toString());
+		} catch (UnknownHostException e) {
+			System.out.println("Unknown host: " + request.getHost());
+			System.out.println(e);
+			return;
+		} catch (IOException e) {
+			//System.out.println("Error writing request to server: " + e);
+			return;
+		}
+		// Read response and forward it to client 
+		try {
+			DataInputStream fromServer = new DataInputStream(server.getInputStream());
+			response = new HttpResponse(fromServer);
+			
+			// Write response to client. First headers, then body 
+			toClient.writeBytes(response.toString());
+			toClient.write(response.getBody());
+			
+		} catch (IOException e) {
+			//System.out.println("Error writing response to client: " + e);
+		}
+
+		// Close connections
+		try {
+			if (client != null)
+				client.close();
+			if (server != null)
+				server.close();
+		} catch (IOException e) {
+			//System.out.println("Error closing connections: " + e);
+		}
+	}
+
+	/** Read command line arguments and start proxy */
+	public static void main(String args[]) {
+		int myPort = 5490;
+
+		init(myPort);
+
+		/**
+		 * Main loop. Listen for incoming connections and spawn a new thread for
+		 * handling them
+		 */
+		Socket client = null;
+
+		while (true) {
+			try {
+				client = socket.accept();
+
+				// Create thread and anonymous class to handle a single
+				// client connection
+				Thread serveClient = new Thread(new Runnable() {
+					private Socket _client;
+
+					public Runnable init(Socket c) {
+						_client = c;
+						return this;
+					}
+
+					@Override
+					public void run() {
+						handle(_client);
+					}
+
+				}.init(client));
+
+				serveClient.start();
+
+			} catch (IOException e) {
+				System.out.println("Error reading request from client: " + e);
+				/*
+				 * Definitely cannot continue processing this request, so skip
+				 * to next iteration of while loop.
+				 */
+				continue;
+			}
+		}
+
+	}
+	
+	/**
+	 * Send error message to client
+	 * @param code : HTTP error code (400, 501)
+	 * @param reason : Bad Request, Not Implemented
+	 * @param body : What to put in the HTML
+	 * @param toClient : Output stream to client
+	 * @param client : Client socket
+	 */
+	private static void sendErrorMessage(String code, String reason, String body,
+			DataOutputStream toClient, Socket client) {
+		String toSend = "HTTP/1.0 "+code+" "+reason+"\r\nConnection: close\r\n\r\n";
+		toSend += "<!DOCTYPE html>\n<html>\n<body>\n<p>"+body+"</p>\n</body>\n</html>\r\n\r\n";
+		try {
+			toClient.writeBytes(toSend);
+			client.close();
+			return;
+		} catch (IOException e) {
+			System.out.println("Error writing response to client: " + e);
+			return;
+		}
+	}
+
+}

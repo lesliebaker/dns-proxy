@@ -1,0 +1,246 @@
+/**
+ * @author Leslie Baker
+ * u0823226
+ */
+
+package server;
+/**
+ * HttpRequest - HTTP request container and parser
+ *
+ * $Id: HttpRequest.java,v 1.2 2003/11/26 18:11:53 kangasha Exp $
+ *
+ */
+
+import java.io.*;
+
+public class HttpRequest {
+	/** Help variables */
+	final static String CRLF = "\r\n";
+	final static int HTTP_PORT = 80;
+	/** Store the request parameters */
+	String method;
+	String URI;
+	String version;
+	String headers = "";
+	/** Server and port */
+	private String host;
+	private int port;
+
+	/** Create HttpRequest by reading it from the client socket 
+	 * @throws BadMethodException */
+	public HttpRequest(BufferedReader from) throws BadMethodException, EmptyRequestException, 
+												BadRequestException, BadVersionException {
+		String firstLine = "";
+		try {
+			firstLine = from.readLine();
+		} catch (IOException e) {
+			System.out.println("Error reading request line: " + e);
+		}
+		
+		// For testing purposes... I don't know why I kept getting empty requests but I
+		// don't want to crash on them.
+		// It only happens when I connect my whole network to the proxy. Probably there are
+		// just requests floating around.
+		if (firstLine == null)
+			throw new EmptyRequestException();
+		
+		String[] tmp = firstLine.split(" ");
+		if (tmp.length == 3) {
+			method = tmp[0];
+			URI = tmp[1];
+			version = tmp[2];
+		}
+		else
+			throw new BadRequestException();
+
+		System.out.println("URI is: " + URI);
+
+		if (!method.equals("GET")) {
+			System.out.println("Error: Method not GET");
+			throw new BadMethodException();
+		}
+		if (!version.equals("HTTP/1.0"))
+			throw new BadVersionException();
+		try {
+			String line = from.readLine();
+			while (line.length() != 0) {
+				
+				// check for improperly formatted headers
+				if (line.indexOf(":") <= 0 || line.indexOf(":") >= line.length() - 1)
+					throw new BadRequestException();
+
+				// throw away Connection (we're gonna make it close anyways)
+				if (line.startsWith("Connection:")) {
+					line = from.readLine();
+					continue;
+				}
+				
+				headers += line + CRLF;
+				/* We need to find host header to know which server to
+				 * contact in case the request URI is not complete. */
+				if (line.startsWith("Host:")) {
+					tmp = line.split(" ");
+					if (tmp[1].indexOf(':') > 0) {
+						String[] tmp2 = tmp[1].split(":");
+						host = tmp2[0];
+						port = Integer.parseInt(tmp2[1]);
+					} else {
+						host = tmp[1];
+						port = HTTP_PORT;
+					}
+				}
+				line = from.readLine();
+			}
+			
+			// Make sure we actually have the host. If it wasn't in a header, try to get it
+			// from the URI. If it's not in the URI, it will throw an exception.
+			if (host == null) {
+				host = getHostFromURI(URI);
+				port = getPortFromURI(URI);
+				URI = getURLFromURI(URI);
+			}
+			// If the URI was absolute, get the relative bit to send to the host.
+			if (URI.indexOf("http://") > -1 || URI.indexOf("https://") > -1)
+				URI = getURLFromURI(URI);
+			
+		} catch (IOException e) {
+			//System.out.println("Error reading from socket: " + e);
+			return;
+		}
+		System.out.println("Host to contact is: " + host + " at port " + port);
+	}
+
+	/** Return host for which this request is intended */
+	public String getHost() {
+		return host;
+	}
+
+	/** Return port for server */
+	public int getPort() {
+		return port;
+	}
+	
+	/** Return URI for request */
+	public String getURI() {
+		return URI;
+	}
+
+	/**
+	 * Convert request into a string for easy re-sending.
+	 */
+	public String toString() {
+		String req = "";
+
+		req = method + " " + URI + " " + version + CRLF;
+		req += headers;
+		// This proxy does not support persistent connections 
+		req += "Connection: close" + CRLF;
+		req += CRLF;
+
+		return req;
+	}
+	
+	/**
+	 * Get host from full URI
+	 * @throws BadRequestException 
+	 */
+	private String getHostFromURI(String uri) throws BadRequestException {
+		int startIndex = uri.indexOf("://") + 3;
+		
+		// there was no http://
+		if (startIndex == 2)
+			throw new BadRequestException();
+		
+		// Get the index of either right before the port or right before the / after the host
+		int stopIndex = uri.indexOf(":", startIndex);
+		if (stopIndex == -1)
+			stopIndex = uri.indexOf("/", startIndex);
+		if (stopIndex == -1)
+			stopIndex = uri.length() - 1;
+		
+		// There is still the possibility that there was nothing after http://
+		// if so, it's a bad request format
+		try {
+			return uri.substring(startIndex, stopIndex);
+		} catch (StringIndexOutOfBoundsException e) {
+			throw new BadRequestException();
+		}
+	}
+	
+	/**
+	 * Get port from full URI
+	 */
+	private int getPortFromURI(String uri) {
+		int from = uri.indexOf("://") + 3;
+		
+		// Get the index of the colon before the port (if there is one)
+		int startIndex = uri.indexOf(":", from) + 1;
+		
+		// Return default if port is not specified
+		if (startIndex == 0)
+			return HTTP_PORT;
+		
+		// Get the index of the end of the port (if there is one)
+		int stopIndex = uri.indexOf("/", from);
+		
+		// If there isn't a slash, just go to the end of the uri
+		if (stopIndex == -1)
+			stopIndex = uri.length();
+		
+		// One last check - really the exception should never happen
+		try {
+			return Integer.parseInt(uri.substring(startIndex, stopIndex));
+		}
+		catch (NumberFormatException e) {
+			return HTTP_PORT;
+		}
+	}
+	
+	/**
+	 * Get relative URL from absolute URI
+	 */
+	private String getURLFromURI(String uri) {
+		int index = uri.indexOf("://") + 3;
+		return uri.substring(uri.indexOf("/", index));
+	}
+	
+	/**
+	 * Exception for bad method (not GET)
+	 */
+	public class BadMethodException extends Exception {
+		private static final long serialVersionUID = 1L;
+
+		public BadMethodException() {
+		}
+	}
+	
+	/**
+	 * Exception for empty requests
+	 */
+	public class EmptyRequestException extends Exception {
+		private static final long serialVersionUID = 1L;
+
+		public EmptyRequestException() {
+		}
+	}
+	
+	/**
+	 * Exception for bad (incorrectly formatted) requests
+	 */
+	public class BadRequestException extends Exception {
+		private static final long serialVersionUID = 1L;
+
+		public BadRequestException() {
+		}
+	}
+	
+	/**
+	 * Exception for bad HTTP version (not 1.0)
+	 */
+	public class BadVersionException extends Exception {
+		private static final long serialVersionUID = 1L;
+
+		public BadVersionException() {
+		}
+	}
+}

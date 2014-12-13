@@ -1,0 +1,14 @@
+Leslie Baker
+u0823226
+
+I wrote my proxy server in Java.
+
+My tarball should expand to contain this readme file and a src folder.
+  - src contains my source code (in three packages)
+  - To run my server from a unix terminal, make sure you're in the src folder
+  - To compile: $ javac proxy/ProxyCache.java (there is a warning about using a deprecated
+    API - this refers to using readLine() on a DataInputStream. It was in the skeleton and it
+    still works so I kept it.)
+  - To run: $ java proxy/ProxyCache <port_num>
+  - Alternatively, you could import the packages into Eclipse... but command line is probably
+    easier
