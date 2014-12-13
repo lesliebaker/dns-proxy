@@ -3,6 +3,7 @@ package proxy;
 import java.net.*;
 import java.util.AbstractMap.SimpleEntry;
 import java.util.HashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.io.*;
 
 import client.HttpResponse;
@@ -37,7 +38,7 @@ public class ProxyCache {
 	/** Create the ProxyCache object and the socket */
 	public static void init(int p) {
 		port = p;
-		//lock = new ReentrantLock();
+		lock = new ReentrantLock();
 		cache = new HashMap<String, InetAddress>();
 		totalTime = 0;
 		totalRequests = 0;
@@ -55,6 +56,10 @@ public class ProxyCache {
 		HttpRequest request = null;
 		HttpResponse response = null;
 
+		/* Process request. If there are any exceptions, then simply
+		 * return and end this request. This unfortunately means the
+		 * client will hang for a while, until it timeouts. */
+
 		// Read request 
 		DataOutputStream toClient = null;
 		try {
@@ -63,16 +68,10 @@ public class ProxyCache {
 			toClient = new DataOutputStream(client.getOutputStream());
 			try {
 				//lock.lock();
-				
-				// receive HTTP request
 				request = new HttpRequest(fromClient, currentCookie, cache, useDNS);
-				
-				// Calculate average time
 				totalRequests++;
 				totalTime += request.getTime();
 				System.out.println("Average request time so far: " + (totalTime / totalRequests) + "ms");
-				
-				// add cookie to cache
 				currentCookie = request.getCookie();
 				SimpleEntry<String, InetAddress> entry = request.getEntry();
 				if (entry != null) {

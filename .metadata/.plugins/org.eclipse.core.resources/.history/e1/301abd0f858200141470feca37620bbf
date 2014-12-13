@@ -3,6 +3,7 @@ package proxy;
 import java.net.*;
 import java.util.AbstractMap.SimpleEntry;
 import java.util.HashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.io.*;
 
 import client.HttpResponse;

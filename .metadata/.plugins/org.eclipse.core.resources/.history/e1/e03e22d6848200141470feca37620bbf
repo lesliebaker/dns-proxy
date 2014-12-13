@@ -146,6 +146,8 @@ public class HttpRequest {
 			
 			// If we don't have a cookie, start protocol to get one
 			if (currentCookie == null) {
+				//if (lock.isHeldByCurrentThread())
+				//	lock.unlock();
 				System.out.println("Requesting cookie...");
 				// initial message
 				toDNS.writeObject("I want to talk");
@@ -166,11 +168,11 @@ public class HttpRequest {
 			String hostAddress = (String)fromDNS.readObject();
 			System.out.println("host address: " + hostAddress);
 			InetAddress ip = InetAddress.getByName(hostAddress);
-			
-			// Authentication failed
 			if (hostAddress == null) {
+				//lock.lock();
 				currentCookie = null;
 				connection.close();
+				//throw new DNSException("Error with cookie");
 				return null;
 			}
 			
